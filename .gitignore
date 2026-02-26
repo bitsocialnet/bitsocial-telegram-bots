@@ -12,3 +12,5 @@ redis
 data.sqlite
 migration
 .DS_Store
+.cursor
+.codex

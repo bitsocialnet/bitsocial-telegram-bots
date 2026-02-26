@@ -1,17 +1,18 @@
 {
-    "name": "plebbitfeed",
+    "name": "bitsocial-telegram-bots",
     "version": "0.1.0",
-    "description": "A bot to forward plebbit posts on telegram",
-    "author": "plebeius.eth",
+    "description": "Telegram feed bots for Bitsocial clients (5chan, Seedit, etc.)",
+    "author": "bitsocialhq",
     "license": "GPL-2.0-only",
     "main": "index.js",
     "type": "module",
     "scripts": {
         "test": "echo \"Error: no test specified\" && exit 1",
         "start": "npx tsx src/index.ts",
+        "start:5chan-feed": "BOT_NAME=5chan-feed npx tsx src/index.ts",
         "build": "tsc",
         "dev": "npx tsx --watch src/index.ts",
-        "prettier": "prettier {src,electron}/**/*.{js,ts,tsx} --write"
+        "prettier": "prettier src/**/*.{js,ts} --write"
     },
     "dependencies": {
         "@plebbit/plebbit-js": "https://github.com/plebbit/plebbit-js.git#692ec349f01aa6d8e939ff1d6d07315ab92e4099",
@@ -31,10 +32,5 @@
     },
     "resolutions": {
         "skia-canvas": "2.0.2"
-    },
-    "prettier": {
-        "{src,electron}/**/*.{js,ts,tsx}": [
-            "prettier --write"
-        ]
     }
 }
