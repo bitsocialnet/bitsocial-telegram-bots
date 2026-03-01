@@ -7,7 +7,7 @@
     "main": "index.js",
     "type": "module",
     "scripts": {
-        "test": "echo \"Error: no test specified\" && exit 1",
+        "test": "vitest run",
         "start": "npx tsx src/index.ts",
         "start:5chan-feed": "BOT_NAME=5chan-feed npx tsx src/index.ts",
         "build": "tsc",
@@ -28,7 +28,8 @@
         "@telegraf/types": "7.1.0",
         "@types/node": "20.11.24",
         "prettier": "3.5.3",
-        "tsx": "4.7.1"
+        "tsx": "4.7.1",
+        "vitest": "^4.0.18"
     },
     "resolutions": {
         "skia-canvas": "2.0.2"
