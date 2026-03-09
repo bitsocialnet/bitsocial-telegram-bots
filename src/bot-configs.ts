@@ -5,7 +5,7 @@ const fiveChanFeed: BotConfig = {
   name: '5chan-feed',
   clientName: '5chan',
   clientBaseUrl: 'https://5chan.app',
-  listUrl: 'https://raw.githubusercontent.com/bitsocialhq/lists/master/5chan-directories.json',
+  listUrl: 'https://raw.githubusercontent.com/bitsocialnet/lists/master/5chan-directories.json',
 
   parseCommunities(data: any): CommunityInfo[] {
     if (!data?.directories || !Array.isArray(data.directories)) {

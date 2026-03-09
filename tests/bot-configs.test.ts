@@ -32,8 +32,8 @@ describe('5chan-feed config', () => {
     expect(fiveChanConfig.clientBaseUrl).toBe('https://5chan.app');
   });
 
-  test('has correct list URL pointing to bitsocialhq/lists', () => {
-    expect(fiveChanConfig.listUrl).toContain('bitsocialhq/lists');
+  test('has correct list URL pointing to bitsocialnet/lists', () => {
+    expect(fiveChanConfig.listUrl).toContain('bitsocialnet/lists');
     expect(fiveChanConfig.listUrl).toContain('5chan-directories.json');
   });
 

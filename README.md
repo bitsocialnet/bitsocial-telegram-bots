@@ -1,22 +1,22 @@
 # Bitsocial Telegram Bots
 
-Telegram feed bots for [Bitsocial](https://github.com/bitsocialhq) clients. Each bot monitors a specific client's community list and forwards new posts to Telegram channels/groups.
+Telegram feed bots for [Bitsocial](https://github.com/bitsocialnet) clients. Each bot monitors a specific client's community list and forwards new posts to Telegram channels/groups.
 
 ## Available Bots
 
 ### 5chan Feed
 
-Monitors all [5chan](https://github.com/bitsocialhq/5chan) directories (boards) from [`5chan-directories.json`](https://github.com/bitsocialhq/lists/blob/master/5chan-directories.json) and posts new content to Telegram. Each post includes buttons to view it on 5chan and Seedit.
+Monitors all [5chan](https://github.com/bitsocialnet/5chan) directories (boards) from [`5chan-directories.json`](https://github.com/bitsocialnet/lists/blob/master/5chan-directories.json) and posts new content to Telegram. Each post includes buttons to view it on 5chan and Seedit.
 
 ### Seedit Feed *(planned)*
 
-Will monitor [Seedit](https://github.com/bitsocialhq/seedit) communities and post new content to Telegram.
+Will monitor [Seedit](https://github.com/bitsocialnet/seedit) communities and post new content to Telegram.
 
 ## Setup
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/bitsocialhq/bitsocial-telegram-bots.git
+   git clone https://github.com/bitsocialnet/bitsocial-telegram-bots.git
    cd bitsocial-telegram-bots
    ```
 

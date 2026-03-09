@@ -2,7 +2,7 @@
     "name": "bitsocial-telegram-bots",
     "version": "0.1.0",
     "description": "Telegram feed bots for Bitsocial clients (5chan, Seedit, etc.)",
-    "author": "bitsocialhq",
+    "author": "bitsocialnet",
     "license": "GPL-2.0-only",
     "main": "index.js",
     "type": "module",

@@ -8,14 +8,14 @@ When adding a Telegram feed bot for a new Bitsocial client (e.g. Seedit).
 
 ### 1. Find or Create the Community List
 
-Each client's community list lives in `bitsocialhq/lists` on GitHub. Examples:
+Each client's community list lives in `bitsocialnet/lists` on GitHub. Examples:
 
 - 5chan: `5chan-directories.json`
 - Seedit: (needs to be created, e.g. `seedit-communities.json`)
 
 The raw URL format is:
 ```
-https://raw.githubusercontent.com/bitsocialhq/lists/master/<filename>.json
+https://raw.githubusercontent.com/bitsocialnet/lists/master/<filename>.json
 ```
 
 ### 2. Add a Bot Config
@@ -27,7 +27,7 @@ const seeditFeed: BotConfig = {
   name: 'seedit-feed',
   clientName: 'Seedit',
   clientBaseUrl: 'https://seedit.app',
-  listUrl: 'https://raw.githubusercontent.com/bitsocialhq/lists/master/seedit-communities.json',
+  listUrl: 'https://raw.githubusercontent.com/bitsocialnet/lists/master/seedit-communities.json',
 
   parseCommunities(data: any): CommunityInfo[] {
     // Parse the JSON structure for this client's list

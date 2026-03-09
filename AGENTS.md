@@ -97,7 +97,7 @@ Each bot only links to its own client. The 5chan bot produces "View on 5chan" bu
 
 - Each bot config MUST only link to its own client — never cross-link to other Bitsocial clients.
 - Each bot config MUST define all methods in the `BotConfig` interface.
-- Community lists MUST be fetched from `bitsocialhq/lists` on GitHub.
+- Community lists MUST be fetched from `bitsocialnet/lists` on GitHub.
 - New bot configs MUST be registered in the `botConfigs` map in `src/bot-configs.ts`.
 
 ### Code Organization Rules
