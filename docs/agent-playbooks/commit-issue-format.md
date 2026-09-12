@@ -2,7 +2,7 @@
 
 ## When to Use
 
-When proposing or implementing meaningful code changes, suggest both a commit title and a GitHub issue.
+Use this format when the user requests wording or authorizes creating a commit or issue. A code change alone does not require an issue, a suggested issue, or publication. Existing authorization applies without repeated approval.
 
 ## Commit Title Format
 

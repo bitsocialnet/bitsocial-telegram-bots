@@ -1,46 +1,7 @@
-# Hooks Setup
+# Agent entry points
 
-## Overview
+This repository commits `AGENTS.md` for Codex and Cursor and a `CLAUDE.md` import for Claude Code. It has no committed lifecycle hooks, custom agents, or skill catalog. Do not assume a formatter, install, or verification command runs automatically.
 
-Both `.cursor/` and `.codex/` contain hooks that run automatically during AI-assisted development. They are mirrored — changes to one should be applied to both.
+Run the commands required by the affected change explicitly. Keep Git cleanup, dependency installation, builds, bot startup, and Telegram sends out of automatic session-end hooks.
 
-## Hook Configuration
-
-Defined in `.cursor/hooks.json` (and `.codex/hooks.json`):
-
-```json
-{
-  "version": 1,
-  "hooks": {
-    "afterFileEdit": [
-      { "command": ".cursor/hooks/format.sh", "timeout": 10 },
-      { "command": ".cursor/hooks/yarn-install.sh", "timeout": 120 }
-    ],
-    "stop": [
-      { "command": ".cursor/hooks/verify.sh", "timeout": 60 }
-    ]
-  }
-}
-```
-
-## Hooks
-
-### format.sh (afterFileEdit)
-
-Auto-formats `.js`, `.ts`, and `.mjs` files using Prettier after AI edits.
-
-### yarn-install.sh (afterFileEdit)
-
-Runs `yarn install` when `package.json` is modified, to keep the lockfile in sync.
-
-### verify.sh (stop)
-
-Runs `yarn build` when the agent session ends, to catch compilation errors.
-
-## Maintenance
-
-When updating hooks:
-
-1. Edit the file in `.cursor/hooks/`
-2. Copy the updated file to `.codex/hooks/`
-3. If changing `hooks.json`, copy that too
+If a future task needs a hook, use the app’s native configuration and test its actual input format: [Claude settings](https://code.claude.com/docs/en/hooks), [Cursor hooks](https://cursor.com/docs/hooks), and [Codex hooks](https://learn.chatgpt.com/docs/hooks). Shared behavior can use a common script, but matching JSON files do not establish equivalent runtime behavior.

@@ -3,11 +3,11 @@
 ## Purpose
 
 This file defines the always-on rules for AI agents working on bitsocial-telegram-bots.
-Use this as the default policy. Load linked playbooks only when their trigger condition applies.
+Explicit user instructions take precedence. Load linked playbooks only when relevant. Continue authorized work through implementation and appropriate verification; ask only when missing information materially changes the outcome.
 
 ## Surprise Handling
 
-If you encounter something surprising or ambiguous while working, alert the developer immediately.
+Report unexpected repository-specific behavior and continue independent work.
 After confirmation, add a concise entry to `docs/agent-playbooks/known-surprises.md` so future agents avoid the same issue.
 Only record items that are repo-specific, likely to recur, and have a concrete mitigation.
 
@@ -118,8 +118,9 @@ Each bot only links to its own client. The 5chan bot produces "View on 5chan" bu
 ### Verification Rules
 
 - Never mark work complete without verification.
-- After code changes, run: `yarn build`.
-- If build fails, fix and re-run until passing.
+- Run `yarn build` for TypeScript behavior, configuration, or dependency changes. Documentation-only changes need a diff and link review.
+- For bug fixes, use a focused reproduction or test when available. Resolve failures caused by the change; report unrelated blockers with evidence.
+- Do not launch a live bot or send Telegram messages as a verification step without explicit authorization.
 
 ### Tooling Constraints
 
@@ -133,13 +134,10 @@ Each bot only links to its own client. The 5chan bot produces "View on 5chan" bu
 
 ## Core SHOULD Rules
 
-- Keep context lean: delegate heavy/verbose tasks to subprocesses when available.
-- For complex work, parallelize independent checks.
-- When proposing or implementing meaningful code changes, include both:
-  - a Conventional Commit title suggestion
-  - a short GitHub issue suggestion
-  Use the format playbook: `docs/agent-playbooks/commit-issue-format.md`.
-- When stuck on a bug, search the web for recent fixes/workarounds.
+- Delegate substantial independent work when useful; keep small or coupled tasks local. Assign scope and file ownership, preserve other edits, and serialize heavyweight checks.
+- Keep model and reasoning choices in app/session settings instead of repository instructions. Use runtime defaults and supported invocation choices.
+- Use `docs/agent-playbooks/commit-issue-format.md` when commit/issue wording is requested or an authorized artifact is being created. Do not add suggestions to unrelated answers.
+- Look up official dependency/platform documentation when a specific API or version uncertainty blocks progress; report missing private source or user-only reproduction details as the concrete gap.
 - After user corrections, identify root cause and apply the lesson in subsequent steps.
 
 ## Common Commands

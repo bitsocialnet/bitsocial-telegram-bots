@@ -39,4 +39,4 @@ yarn build
 
 ### 6. Report
 
-Suggest a commit title and issue per `docs/agent-playbooks/commit-issue-format.md`.
+Report the cause, correction, and verification. Use `docs/agent-playbooks/commit-issue-format.md` only when wording is requested or an authorized commit/issue is being created.
