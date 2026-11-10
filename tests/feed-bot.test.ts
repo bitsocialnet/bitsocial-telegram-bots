@@ -560,4 +560,46 @@ describe('startFeedBot cycles', () => {
     expect(bot.telegram.sendMessage).not.toHaveBeenCalled();
     expect(mockPkc.createComment).not.toHaveBeenCalled();
   });
+
+  test('a crawl abandoned by the 6-minute timeout does not resend a post that a later crawl already sent', async () => {
+    serveCommunity([makePost('QmPost1')]);
+    // Crawl A's comment.update() stalls until released; later crawls get a responsive comment.
+    let releaseStalledUpdate!: () => void;
+    const stalledComment = makeComment({ update: vi.fn(() => new Promise<void>((resolve) => (releaseStalledUpdate = resolve))) });
+    mockPkc.createComment.mockResolvedValueOnce(stalledComment);
+    const bot = makeMockBot();
+    serveCycles(3);
+    const run = startFeedBot(bot, makeMockConfig());
+
+    // Cycle 1 gives up on crawl A after 6 minutes (A keeps running); cycle 2's crawl B sends the post.
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 35_000);
+    expect(sendsTo(bot, CHAT)).toBe(1);
+
+    // Crawl A resumes past its earlier history check.
+    releaseStalledUpdate();
+    await vi.advanceTimersByTimeAsync(80_000);
+    await run;
+
+    expect(sendsTo(bot, CHAT)).toBe(1);
+  });
+
+  test('a later crawl that queued the same post while the abandoned crawl was still sending it does not send it again', async () => {
+    serveCommunity([makePost('QmPost1')]);
+    const bot = makeMockBot();
+    // Crawl A's send is slow enough to outlast the 6-minute crawl timeout.
+    let releaseSlowSend!: () => void;
+    bot.telegram.sendMessage.mockImplementationOnce(() => new Promise((resolve) => (releaseSlowSend = () => resolve({}))));
+    serveCycles(2);
+    const run = startFeedBot(bot, makeMockConfig());
+
+    // Cycle 2's crawl B verifies the post and queues it behind crawl A's in-flight send.
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 35_000);
+    expect(sendsTo(bot, CHAT)).toBe(1);
+
+    releaseSlowSend();
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 80_000);
+    await run;
+
+    expect(sendsTo(bot, CHAT)).toBe(1);
+  });
 });

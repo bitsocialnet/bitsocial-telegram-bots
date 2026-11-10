@@ -213,14 +213,17 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
         const spoilerTag = newPost.spoiler ? '[SPOILER]' : newPost.nsfw ? '[NSFW]' : '';
         const captionMessage = `<b>${title ? title + ' ' : ''}${spoilerTag}</b>\n${content}\n\nPosted on <b>${communityLabel}</b> by ${getShortAddress({ name: newPost.author.address })}`;
 
-        const chatIds = getUndeliveredChatIds(newPost.cid);
         const buttons = config.getPostButtons(community, newPost.cid);
         const replyMarkup = {
           inline_keyboard: [buttons.map((b) => ({ text: b.text, url: b.url }))],
         };
 
+        // Each queued task picks its chats when it runs. The queue runs one task at a time, and a crawl abandoned
+        // by the 6-minute timeout keeps running, so another crawl may have sent this post since the check above.
         if (newPost.link) {
           await queue.add(async () => {
+            const chatIds = getUndeliveredChatIds(newPost.cid);
+            if (chatIds.length === 0) return;
             const mediaType = getMediaTypeFromUrl(newPost.link);
 
             const sendPromises = chatIds.map((chatId) =>
@@ -239,6 +242,8 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
           });
         } else {
           await queue.add(async () => {
+            const chatIds = getUndeliveredChatIds(newPost.cid);
+            if (chatIds.length === 0) return;
             const sendPromises = chatIds.map((chatId) =>
               tgBotInstance.telegram
                 .sendMessage(chatId, captionMessage, {
