@@ -170,6 +170,13 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
 
     for (const newPost of posts.slice(0, 20)) {
       if (newPost.cid && !processedCids.has(newPost.cid)) {
+        // Age and deletion come from the page data. Check them before subscribing to comment updates,
+        // otherwise every old post in the first 20 is re-verified over the network on every cycle.
+        const currentTime = Math.floor(Date.now() / 1000);
+        const maxAge = 2 * 24 * 60 * 60;
+        if (currentTime - newPost.timestamp > maxAge) continue;
+        if (newPost.deleted) continue;
+
         const comment = await pkcInstance.createComment({ cid: newPost.cid });
         await comment.update();
 
@@ -194,11 +201,6 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
           continue;
         }
         await comment.stop();
-
-        const currentTime = Math.floor(Date.now() / 1000);
-        const maxAge = 2 * 24 * 60 * 60;
-        if (currentTime - newPost.timestamp > maxAge) continue;
-        if (newPost.deleted) continue;
 
         let title = escapeHtml(newPost.title || '');
         let content = escapeHtml(newPost.content || '');

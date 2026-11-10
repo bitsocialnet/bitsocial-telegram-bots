@@ -502,4 +502,15 @@ describe('startFeedBot cycles', () => {
 
     expect(sendsTo(bot, CHAT)).toBe(1);
   });
+
+  test('skips posts older than 2 days and deleted posts without subscribing to comment updates', async () => {
+    const threeDaysAgo = Math.floor(Date.now() / 1000) - 3 * 24 * 60 * 60;
+    serveCommunity([makePost('QmOld', { timestamp: threeDaysAgo }), makePost('QmDeleted', { deleted: true })]);
+    const bot = makeMockBot();
+
+    await runCycles(bot, 2);
+
+    expect(mockPkc.createComment).not.toHaveBeenCalled();
+    expect(bot.telegram.sendMessage).not.toHaveBeenCalled();
+  });
 });
