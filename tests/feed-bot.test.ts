@@ -33,6 +33,7 @@ import {
   savePosts,
   startFeedBot,
   setShuttingDown,
+  waitForPendingSends,
   _getProcessedCids,
   _resetState,
 } from '../src/feed-bot.js';
@@ -601,5 +602,53 @@ describe('startFeedBot cycles', () => {
     await run;
 
     expect(sendsTo(bot, CHAT)).toBe(1);
+  });
+
+  // Two communities in one batch: QmPost1's send is held in flight and QmPost2's send waits behind it in the queue.
+  function holdFirstSendWithAnotherQueued(bot: any) {
+    const other: CommunityInfo = { address: 'other.eth' };
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ communities: [community, other] }) });
+    mockPkc.getCommunity.mockImplementation(async ({ address }: { address: string }) => ({
+      address,
+      posts: { pages: { hot: { comments: [makePost(address === community.address ? 'QmPost1' : 'QmPost2')] } } },
+    }));
+    let releaseFirstSend!: () => void;
+    bot.telegram.sendMessage.mockImplementationOnce(() => new Promise((resolve) => (releaseFirstSend = () => resolve({}))));
+    return () => releaseFirstSend();
+  }
+
+  test('queued sends do not start once shutdown has begun', async () => {
+    const bot = makeMockBot();
+    const releaseFirstSend = holdFirstSendWithAnotherQueued(bot);
+    const run = startFeedBot(bot, makeMockConfig());
+    await vi.advanceTimersByTimeAsync(100);
+    expect(bot.telegram.sendMessage).toHaveBeenCalledTimes(1);
+
+    setShuttingDown(true);
+    releaseFirstSend();
+    await vi.advanceTimersByTimeAsync(100);
+    await run;
+
+    expect(bot.telegram.sendMessage).toHaveBeenCalledTimes(1);
+    expect(_getProcessedCids().has('QmPost1')).toBe(true);
+  });
+
+  test('waitForPendingSends resolves once the in-flight send is recorded', async () => {
+    const bot = makeMockBot();
+    const releaseFirstSend = holdFirstSendWithAnotherQueued(bot);
+    const run = startFeedBot(bot, makeMockConfig());
+    await vi.advanceTimersByTimeAsync(100);
+
+    setShuttingDown(true);
+    let drained = false;
+    void waitForPendingSends(5_000).then(() => (drained = true));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(drained).toBe(false);
+
+    releaseFirstSend();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(drained).toBe(true);
+    expect(_getProcessedCids().has('QmPost1')).toBe(true);
+    await run;
   });
 });

@@ -21,6 +21,14 @@ export function setShuttingDown(value: boolean) {
   isShuttingDown = value;
 }
 
+// Resolves when the send queue is idle, i.e. a send already in flight has finished and been recorded in
+// history.json, or after timeoutMs. Call after setShuttingDown(true): queued sends then start no new send.
+export async function waitForPendingSends(timeoutMs: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([queue.onIdle(), new Promise<void>((resolve) => (timer = setTimeout(resolve, timeoutMs)))]);
+  clearTimeout(timer);
+}
+
 export async function sendMediaToChat(
   tgBotInstance: Telegraf<Scenes.WizardContext>,
   chatId: string,
@@ -220,10 +228,11 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
 
         // Each queued task picks its chats when it runs. The queue runs one task at a time, and a crawl abandoned
         // by the 6-minute timeout keeps running, so another crawl may have sent this post since the check above.
+        // No new send starts once shutdown has begun (see waitForPendingSends).
         if (newPost.link) {
           await queue.add(async () => {
             const chatIds = getUndeliveredChatIds(newPost.cid);
-            if (chatIds.length === 0) return;
+            if (isShuttingDown || chatIds.length === 0) return;
             const mediaType = getMediaTypeFromUrl(newPost.link);
 
             const sendPromises = chatIds.map((chatId) =>
@@ -243,7 +252,7 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
         } else {
           await queue.add(async () => {
             const chatIds = getUndeliveredChatIds(newPost.cid);
-            if (chatIds.length === 0) return;
+            if (isShuttingDown || chatIds.length === 0) return;
             const sendPromises = chatIds.map((chatId) =>
               tgBotInstance.telegram
                 .sendMessage(chatId, captionMessage, {

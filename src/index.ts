@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-import { startFeedBot, setShuttingDown } from "./feed-bot.js";
+import { startFeedBot, setShuttingDown, waitForPendingSends } from "./feed-bot.js";
 import { getBotConfig } from "./bot-configs.js";
 import { Scenes, Telegraf } from "telegraf";
 import { Logger } from "tslog";
@@ -58,7 +58,11 @@ export let pkc: any;
 let errorCleanupInterval: NodeJS.Timeout | undefined;
 let isShuttingDown = false;
 
-const gracefulShutdown = async (signal: string) => {
+// How long shutdown waits for a Telegram send already in flight to finish and be recorded.
+const PENDING_SENDS_TIMEOUT_MS = 5000;
+
+// exitCode is 0 for signals and 1 for fatal errors, so supervisors that restart on failure restart the bot.
+const gracefulShutdown = async (signal: string, exitCode = 0) => {
   if (isShuttingDown) {
     log.warn("Force shutting down...");
     process.exit(1);
@@ -70,9 +74,17 @@ const gracefulShutdown = async (signal: string) => {
   try {
     setShuttingDown(true);
 
+    // A send cut off by exit is not in history.json yet and would be sent again after restart.
+    await waitForPendingSends(PENDING_SENDS_TIMEOUT_MS);
+
     if (tgBot) {
       log.info("Stopping Telegram bot...");
-      await tgBot.stop();
+      try {
+        await tgBot.stop();
+      } catch (error) {
+        // stop() throws "Bot is not running!" when launch() failed; PKC must still be destroyed.
+        log.warn("Could not stop Telegram bot:", error instanceof Error ? error.message : String(error));
+      }
     }
 
     if (pkc) {
@@ -83,7 +95,7 @@ const gracefulShutdown = async (signal: string) => {
     if (errorCleanupInterval) clearInterval(errorCleanupInterval);
 
     log.info("Bot shutdown complete");
-    process.exit(0);
+    process.exit(exitCode);
   } catch (error) {
     log.error("Error during shutdown:", error instanceof Error ? error.message : String(error));
     process.exit(1);
@@ -96,12 +108,12 @@ process.on("SIGQUIT", () => gracefulShutdown("SIGQUIT"));
 
 process.on("uncaughtException", (error) => {
   log.error("Uncaught Exception:", error);
-  gracefulShutdown("uncaughtException");
+  gracefulShutdown("uncaughtException", 1);
 });
 
 process.on("unhandledRejection", (reason) => {
   log.error("Unhandled Rejection:", reason);
-  gracefulShutdown("unhandledRejection");
+  gracefulShutdown("unhandledRejection", 1);
 });
 
 const start = async () => {
@@ -206,7 +218,7 @@ const start = async () => {
     log.error("Bot startup error:", error instanceof Error ? error.message : String(error));
 
     if (!isShuttingDown) {
-      await gracefulShutdown("startup-error");
+      await gracefulShutdown("startup-error", 1);
     }
   }
 };
