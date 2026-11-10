@@ -10,6 +10,9 @@ import { getMediaTypeFromUrl, isTwitterVideoUrl, escapeHtml, truncatePost } from
 const queue = new PQueue({ concurrency: 1 });
 const historyCidsFile = 'history.json';
 const historyTempFile = `${historyCidsFile}.tmp`;
+// Delivery history, persisted as history.json `Cids`. A bare post CID means the post reached every chat.
+// `${chatId}:${cid}` means it reached that chat while a send to another chat failed; the other chats are
+// retried on later cycles, and the entries collapse into the bare CID once every chat has the post.
 let processedCids: Set<string> = new Set();
 
 let isShuttingDown = false;
@@ -169,7 +172,7 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
     }
 
     for (const newPost of posts.slice(0, 20)) {
-      if (newPost.cid && !processedCids.has(newPost.cid)) {
+      if (newPost.cid && getUndeliveredChatIds(newPost.cid).length > 0) {
         // Age and deletion come from the page data. Check them before subscribing to comment updates,
         // otherwise every old post in the first 20 is re-verified over the network on every cycle.
         const currentTime = Math.floor(Date.now() / 1000);
@@ -210,7 +213,7 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
         const spoilerTag = newPost.spoiler ? '[SPOILER]' : newPost.nsfw ? '[NSFW]' : '';
         const captionMessage = `<b>${title ? title + ' ' : ''}${spoilerTag}</b>\n${content}\n\nPosted on <b>${communityLabel}</b> by ${getShortAddress({ name: newPost.author.address })}`;
 
-        const chatIds = getChatIds();
+        const chatIds = getUndeliveredChatIds(newPost.cid);
         const buttons = config.getPostButtons(community, newPost.cid);
         const replyMarkup = {
           inline_keyboard: [buttons.map((b) => ({ text: b.text, url: b.url }))],
@@ -228,12 +231,11 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
             );
 
             const results = await Promise.allSettled(sendPromises);
-            const hasSuccessfulSend = results.some((r) => r.status === 'fulfilled' && r.value !== false);
-
-            if (newPost.cid && hasSuccessfulSend) {
-              processedCids.add(newPost.cid);
-              savePosts();
-            }
+            const deliveredChatIds = chatIds.filter((_, i) => {
+              const result = results[i];
+              return result.status === 'fulfilled' && result.value !== false;
+            });
+            recordDelivery(newPost.cid, deliveredChatIds);
           });
         } else {
           await queue.add(async () => {
@@ -250,12 +252,11 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
             );
 
             const results = await Promise.allSettled(sendPromises);
-            const hasSuccessfulSend = results.some((r) => r.status === 'fulfilled' && r.value !== false);
-
-            if (newPost.cid && hasSuccessfulSend) {
-              processedCids.add(newPost.cid);
-              savePosts();
-            }
+            const deliveredChatIds = chatIds.filter((_, i) => {
+              const result = results[i];
+              return result.status === 'fulfilled' && result.value !== false;
+            });
+            recordDelivery(newPost.cid, deliveredChatIds);
           });
         }
 
@@ -272,6 +273,22 @@ export function getChatIds(): string[] {
   if (process.env.FEED_BOT_CHAT) chatIds.push(process.env.FEED_BOT_CHAT);
   if (process.env.FEED_BOT_GROUP) chatIds.push(process.env.FEED_BOT_GROUP);
   return chatIds;
+}
+
+function getUndeliveredChatIds(cid: string): string[] {
+  if (processedCids.has(cid)) return [];
+  return getChatIds().filter((chatId) => !processedCids.has(`${chatId}:${cid}`));
+}
+
+function recordDelivery(cid: string, deliveredChatIds: string[]) {
+  if (deliveredChatIds.length === 0) return;
+  for (const chatId of deliveredChatIds) processedCids.add(`${chatId}:${cid}`);
+  const chatIds = getChatIds();
+  if (chatIds.every((chatId) => processedCids.has(`${chatId}:${cid}`))) {
+    for (const chatId of chatIds) processedCids.delete(`${chatId}:${cid}`);
+    processedCids.add(cid);
+  }
+  savePosts();
 }
 
 export function loadOldPosts() {

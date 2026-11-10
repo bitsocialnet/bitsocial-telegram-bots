@@ -513,4 +513,51 @@ describe('startFeedBot cycles', () => {
     expect(mockPkc.createComment).not.toHaveBeenCalled();
     expect(bot.telegram.sendMessage).not.toHaveBeenCalled();
   });
+
+  // Every send to the group fails during the first cycle only (e.g. a 429 burst).
+  async function groupDownInFirstCycle(chatId: string) {
+    if (chatId === GROUP && mockFetch.mock.calls.length === 1) throw new Error('429: Too Many Requests');
+    return {};
+  }
+
+  test('retries a text post in the chat whose send failed, without resending to the chat that got it', async () => {
+    process.env.FEED_BOT_GROUP = GROUP;
+    serveCommunity([makePost('QmPost1')]);
+    const bot = makeMockBot();
+    bot.telegram.sendMessage.mockImplementation(groupDownInFirstCycle);
+
+    await runCycles(bot, 2);
+
+    expect(sendsTo(bot, CHAT)).toBe(1);
+    expect(sendsTo(bot, GROUP)).toBe(2);
+    const lastHistory = JSON.parse(mockWriteFileSync.mock.calls.at(-1)![1]);
+    expect(lastHistory.Cids).toEqual(['QmPost1']);
+  });
+
+  test('retries a media post in the chat whose send failed, without resending to the chat that got it', async () => {
+    process.env.FEED_BOT_GROUP = GROUP;
+    serveCommunity([makePost('QmPost1', { link: 'https://img.com/pic.jpg' })]);
+    const bot = makeMockBot();
+    // Both the photo and sendMediaToChat's plain-message fallback fail for the group.
+    bot.telegram.sendPhoto.mockImplementation(groupDownInFirstCycle);
+    bot.telegram.sendMessage.mockImplementation(groupDownInFirstCycle);
+
+    await runCycles(bot, 2);
+
+    const photosTo = (chatId: string) => bot.telegram.sendPhoto.mock.calls.filter((call: any[]) => call[0] === chatId).length;
+    expect(photosTo(CHAT)).toBe(1);
+    expect(photosTo(GROUP)).toBe(2);
+  });
+
+  test('treats a bare CID from history.json as delivered to every chat', async () => {
+    process.env.FEED_BOT_GROUP = GROUP;
+    mockReadFileSync.mockReturnValue(JSON.stringify({ Cids: ['QmPost1'] }));
+    serveCommunity([makePost('QmPost1')]);
+    const bot = makeMockBot();
+
+    await runCycles(bot, 1);
+
+    expect(bot.telegram.sendMessage).not.toHaveBeenCalled();
+    expect(mockPkc.createComment).not.toHaveBeenCalled();
+  });
 });
