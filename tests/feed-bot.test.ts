@@ -1,14 +1,16 @@
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockFetch, mockReadFileSync, mockWriteFileSync } = vi.hoisted(() => ({
+const { mockFetch, mockReadFileSync, mockWriteFileSync, mockRenameSync, mockPkc } = vi.hoisted(() => ({
   mockFetch: vi.fn(),
   mockReadFileSync: vi.fn(),
   mockWriteFileSync: vi.fn(),
+  mockRenameSync: vi.fn(),
+  mockPkc: { getCommunity: vi.fn(), createComment: vi.fn(), getComment: vi.fn() },
 }));
 
 vi.mock('../src/index.js', () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-  pkc: {},
+  pkc: mockPkc,
 }));
 
 vi.mock('@pkcprotocol/pkc-js', () => ({
@@ -20,9 +22,20 @@ vi.mock('node-fetch', () => ({ default: mockFetch }));
 vi.mock('node:fs', () => ({
   readFileSync: (...args: any[]) => mockReadFileSync(...args),
   writeFileSync: (...args: any[]) => mockWriteFileSync(...args),
+  renameSync: (...args: any[]) => mockRenameSync(...args),
 }));
 
-import { fetchCommunities, getChatIds, sendMediaToChat, loadOldPosts, savePosts, startFeedBot, _getProcessedCids, _resetState } from '../src/feed-bot.js';
+import {
+  fetchCommunities,
+  getChatIds,
+  sendMediaToChat,
+  loadOldPosts,
+  savePosts,
+  startFeedBot,
+  setShuttingDown,
+  _getProcessedCids,
+  _resetState,
+} from '../src/feed-bot.js';
 import type { BotConfig, CommunityInfo } from '../src/types.js';
 
 function makeMockBot() {
@@ -140,7 +153,8 @@ describe('savePosts', () => {
 
     savePosts();
 
-    expect(mockWriteFileSync).toHaveBeenCalledWith('history.json', expect.any(String), 'utf8');
+    expect(mockWriteFileSync).toHaveBeenCalledWith('history.json.tmp', expect.any(String), 'utf8');
+    expect(mockRenameSync).toHaveBeenCalledWith('history.json.tmp', 'history.json');
 
     const writtenData = JSON.parse(mockWriteFileSync.mock.calls[0][1]);
     expect(writtenData.Cids).toEqual(expect.arrayContaining(['a', 'b']));
@@ -153,6 +167,19 @@ describe('savePosts', () => {
     });
 
     expect(() => savePosts()).not.toThrow();
+  });
+
+  test('a failed write never truncates history.json', () => {
+    mockWriteFileSync.mockReset().mockImplementation(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+    mockRenameSync.mockReset();
+
+    savePosts();
+
+    // writeFileSync opens its target with 'w' (truncate first), so it must never target history.json itself.
+    expect(mockWriteFileSync.mock.calls.map((call) => call[0])).not.toContain('history.json');
+    expect(mockRenameSync).not.toHaveBeenCalled();
   });
 });
 
@@ -390,5 +417,89 @@ describe('_resetState', () => {
 
     _resetState();
     expect(_getProcessedCids().size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// startFeedBot cycle loop
+// ---------------------------------------------------------------------------
+describe('startFeedBot cycles', () => {
+  const CHAT = '-100111';
+  const GROUP = '-100222';
+  const community: CommunityInfo = { address: 'board.eth' };
+
+  function makePost(cid: string, overrides: Record<string, any> = {}) {
+    return { cid, title: `Title ${cid}`, content: 'Body', timestamp: Math.floor(Date.now() / 1000), author: { address: '12D3KooWAuthor' }, ...overrides };
+  }
+
+  function makeComment(overrides: Record<string, any> = {}) {
+    return {
+      updatedAt: Math.floor(Date.now() / 1000),
+      removed: false,
+      update: vi.fn(async () => {}),
+      // Delivers the CommentUpdate as soon as the bot listens, so the 10s wait resolves immediately.
+      on: vi.fn((event: string, listener: () => void) => {
+        if (event === 'update') listener();
+      }),
+      removeListener: vi.fn(),
+      stop: vi.fn(async () => {}),
+      ...overrides,
+    };
+  }
+
+  function serveCommunity(posts: any[]) {
+    mockPkc.getCommunity.mockResolvedValue({ address: community.address, posts: { pages: { hot: { comments: posts } } } });
+  }
+
+  // Lets startFeedBot run `cycles` full cycles; the next cycle sees the shutdown flag right after fetching the list.
+  function serveCycles(cycles: number) {
+    let fetches = 0;
+    mockFetch.mockImplementation(async () => {
+      fetches += 1;
+      if (fetches > cycles) setShuttingDown(true);
+      return { ok: true, json: async () => ({ communities: [community] }) };
+    });
+  }
+
+  async function runCycles(bot: any, cycles: number) {
+    serveCycles(cycles);
+    const run = startFeedBot(bot, makeMockConfig());
+    await vi.advanceTimersByTimeAsync(cycles * 40_000);
+    await run;
+  }
+
+  function sendsTo(bot: any, chatId: string) {
+    return bot.telegram.sendMessage.mock.calls.filter((call: any[]) => call[0] === chatId).length;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    process.env.BOT_TOKEN = 'test-token';
+    process.env.FEED_BOT_CHAT = CHAT;
+    mockReadFileSync.mockReset().mockImplementation(() => {
+      throw new Error('ENOENT: no such file or directory');
+    });
+    mockWriteFileSync.mockReset();
+    mockRenameSync.mockReset();
+    mockPkc.getCommunity.mockReset();
+    mockPkc.createComment.mockReset().mockImplementation(async () => makeComment());
+    mockPkc.getComment.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('does not resend a post when saving history.json fails', async () => {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ Cids: [] }));
+    mockWriteFileSync.mockImplementation(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+    serveCommunity([makePost('QmPost1')]);
+    const bot = makeMockBot();
+
+    await runCycles(bot, 3);
+
+    expect(sendsTo(bot, CHAT)).toBe(1);
   });
 });

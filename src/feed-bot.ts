@@ -9,6 +9,7 @@ import { getMediaTypeFromUrl, isTwitterVideoUrl, escapeHtml, truncatePost } from
 
 const queue = new PQueue({ concurrency: 1 });
 const historyCidsFile = 'history.json';
+const historyTempFile = `${historyCidsFile}.tmp`;
 let processedCids: Set<string> = new Set();
 
 let isShuttingDown = false;
@@ -291,7 +292,10 @@ export function loadOldPosts() {
 export function savePosts() {
   try {
     const dataToSave = { Cids: Array.from(processedCids) };
-    fs.writeFileSync(historyCidsFile, JSON.stringify(dataToSave, null, 2), 'utf8');
+    // Write a temp file and rename it over history.json, so a failed or interrupted write (ENOSPC, crash)
+    // keeps the previous history instead of leaving a truncated file that loads as empty.
+    fs.writeFileSync(historyTempFile, JSON.stringify(dataToSave, null, 2), 'utf8');
+    fs.renameSync(historyTempFile, historyCidsFile);
   } catch (error) {
     log.error('Error saving history file:', error instanceof Error ? error.message : String(error));
   }
@@ -337,6 +341,8 @@ export async function startFeedBot(tgBotInstance: Telegraf<Scenes.WizardContext>
     throw new Error('BOT_TOKEN not set');
   }
 
+  // Load once. While running, the in-memory set is authoritative: reloading it from disk would drop
+  // posts sent after a failed save and send them again.
   loadOldPosts();
 
   const subErrorCounts = new Map<string, { count: number; lastLogged: number }>();
@@ -359,7 +365,6 @@ export async function startFeedBot(tgBotInstance: Telegraf<Scenes.WizardContext>
     cycleCount++;
     const cycleStartTime = Date.now();
 
-    loadOldPosts();
     log.info(`Starting cycle ${cycleCount} with ${processedCids.size} processed posts`);
 
     const communities = await fetchCommunities(config);
