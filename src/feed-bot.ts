@@ -9,12 +9,24 @@ import { getMediaTypeFromUrl, isTwitterVideoUrl, escapeHtml, truncatePost } from
 
 const queue = new PQueue({ concurrency: 1 });
 const historyCidsFile = 'history.json';
+const historyTempFile = `${historyCidsFile}.tmp`;
+// Delivery history, persisted as history.json `Cids`. A bare post CID means the post reached every chat.
+// `${chatId}:${cid}` means it reached that chat while a send to another chat failed; the other chats are
+// retried on later cycles, and the entries collapse into the bare CID once every chat has the post.
 let processedCids: Set<string> = new Set();
 
 let isShuttingDown = false;
 
 export function setShuttingDown(value: boolean) {
   isShuttingDown = value;
+}
+
+// Resolves when the send queue is idle, i.e. a send already in flight has finished and been recorded in
+// history.json, or after timeoutMs. Call after setShuttingDown(true): queued sends then start no new send.
+export async function waitForPendingSends(timeoutMs: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([queue.onIdle(), new Promise<void>((resolve) => (timer = setTimeout(resolve, timeoutMs)))]);
+  clearTimeout(timer);
 }
 
 export async function sendMediaToChat(
@@ -168,7 +180,14 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
     }
 
     for (const newPost of posts.slice(0, 20)) {
-      if (newPost.cid && !processedCids.has(newPost.cid)) {
+      if (newPost.cid && getUndeliveredChatIds(newPost.cid).length > 0) {
+        // Age and deletion come from the page data. Check them before subscribing to comment updates,
+        // otherwise every old post in the first 20 is re-verified over the network on every cycle.
+        const currentTime = Math.floor(Date.now() / 1000);
+        const maxAge = 2 * 24 * 60 * 60;
+        if (currentTime - newPost.timestamp > maxAge) continue;
+        if (newPost.deleted) continue;
+
         const comment = await pkcInstance.createComment({ cid: newPost.cid });
         await comment.update();
 
@@ -194,11 +213,6 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
         }
         await comment.stop();
 
-        const currentTime = Math.floor(Date.now() / 1000);
-        const maxAge = 2 * 24 * 60 * 60;
-        if (currentTime - newPost.timestamp > maxAge) continue;
-        if (newPost.deleted) continue;
-
         let title = escapeHtml(newPost.title || '');
         let content = escapeHtml(newPost.content || '');
         ({ title, content } = truncatePost(title, content, 900));
@@ -207,14 +221,18 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
         const spoilerTag = newPost.spoiler ? '[SPOILER]' : newPost.nsfw ? '[NSFW]' : '';
         const captionMessage = `<b>${title ? title + ' ' : ''}${spoilerTag}</b>\n${content}\n\nPosted on <b>${communityLabel}</b> by ${getShortAddress({ name: newPost.author.address })}`;
 
-        const chatIds = getChatIds();
         const buttons = config.getPostButtons(community, newPost.cid);
         const replyMarkup = {
           inline_keyboard: [buttons.map((b) => ({ text: b.text, url: b.url }))],
         };
 
+        // Each queued task picks its chats when it runs. The queue runs one task at a time, and a crawl abandoned
+        // by the 6-minute timeout keeps running, so another crawl may have sent this post since the check above.
+        // No new send starts once shutdown has begun (see waitForPendingSends).
         if (newPost.link) {
           await queue.add(async () => {
+            const chatIds = getUndeliveredChatIds(newPost.cid);
+            if (isShuttingDown || chatIds.length === 0) return;
             const mediaType = getMediaTypeFromUrl(newPost.link);
 
             const sendPromises = chatIds.map((chatId) =>
@@ -225,15 +243,16 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
             );
 
             const results = await Promise.allSettled(sendPromises);
-            const hasSuccessfulSend = results.some((r) => r.status === 'fulfilled' && r.value !== false);
-
-            if (newPost.cid && hasSuccessfulSend) {
-              processedCids.add(newPost.cid);
-              savePosts();
-            }
+            const deliveredChatIds = chatIds.filter((_, i) => {
+              const result = results[i];
+              return result.status === 'fulfilled' && result.value !== false;
+            });
+            recordDelivery(newPost.cid, deliveredChatIds);
           });
         } else {
           await queue.add(async () => {
+            const chatIds = getUndeliveredChatIds(newPost.cid);
+            if (isShuttingDown || chatIds.length === 0) return;
             const sendPromises = chatIds.map((chatId) =>
               tgBotInstance.telegram
                 .sendMessage(chatId, captionMessage, {
@@ -247,12 +266,11 @@ async function scrollPosts(community: CommunityInfo, tgBotInstance: Telegraf<Sce
             );
 
             const results = await Promise.allSettled(sendPromises);
-            const hasSuccessfulSend = results.some((r) => r.status === 'fulfilled' && r.value !== false);
-
-            if (newPost.cid && hasSuccessfulSend) {
-              processedCids.add(newPost.cid);
-              savePosts();
-            }
+            const deliveredChatIds = chatIds.filter((_, i) => {
+              const result = results[i];
+              return result.status === 'fulfilled' && result.value !== false;
+            });
+            recordDelivery(newPost.cid, deliveredChatIds);
           });
         }
 
@@ -269,6 +287,22 @@ export function getChatIds(): string[] {
   if (process.env.FEED_BOT_CHAT) chatIds.push(process.env.FEED_BOT_CHAT);
   if (process.env.FEED_BOT_GROUP) chatIds.push(process.env.FEED_BOT_GROUP);
   return chatIds;
+}
+
+function getUndeliveredChatIds(cid: string): string[] {
+  if (processedCids.has(cid)) return [];
+  return getChatIds().filter((chatId) => !processedCids.has(`${chatId}:${cid}`));
+}
+
+function recordDelivery(cid: string, deliveredChatIds: string[]) {
+  if (deliveredChatIds.length === 0) return;
+  for (const chatId of deliveredChatIds) processedCids.add(`${chatId}:${cid}`);
+  const chatIds = getChatIds();
+  if (chatIds.every((chatId) => processedCids.has(`${chatId}:${cid}`))) {
+    for (const chatId of chatIds) processedCids.delete(`${chatId}:${cid}`);
+    processedCids.add(cid);
+  }
+  savePosts();
 }
 
 export function loadOldPosts() {
@@ -291,7 +325,10 @@ export function loadOldPosts() {
 export function savePosts() {
   try {
     const dataToSave = { Cids: Array.from(processedCids) };
-    fs.writeFileSync(historyCidsFile, JSON.stringify(dataToSave, null, 2), 'utf8');
+    // Write a temp file and rename it over history.json, so a failed or interrupted write (ENOSPC, crash)
+    // keeps the previous history instead of leaving a truncated file that loads as empty.
+    fs.writeFileSync(historyTempFile, JSON.stringify(dataToSave, null, 2), 'utf8');
+    fs.renameSync(historyTempFile, historyCidsFile);
   } catch (error) {
     log.error('Error saving history file:', error instanceof Error ? error.message : String(error));
   }
@@ -337,6 +374,8 @@ export async function startFeedBot(tgBotInstance: Telegraf<Scenes.WizardContext>
     throw new Error('BOT_TOKEN not set');
   }
 
+  // Load once. While running, the in-memory set is authoritative: reloading it from disk would drop
+  // posts sent after a failed save and send them again.
   loadOldPosts();
 
   const subErrorCounts = new Map<string, { count: number; lastLogged: number }>();
@@ -359,7 +398,6 @@ export async function startFeedBot(tgBotInstance: Telegraf<Scenes.WizardContext>
     cycleCount++;
     const cycleStartTime = Date.now();
 
-    loadOldPosts();
     log.info(`Starting cycle ${cycleCount} with ${processedCids.size} processed posts`);
 
     const communities = await fetchCommunities(config);

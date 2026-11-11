@@ -1,14 +1,16 @@
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockFetch, mockReadFileSync, mockWriteFileSync } = vi.hoisted(() => ({
+const { mockFetch, mockReadFileSync, mockWriteFileSync, mockRenameSync, mockPkc } = vi.hoisted(() => ({
   mockFetch: vi.fn(),
   mockReadFileSync: vi.fn(),
   mockWriteFileSync: vi.fn(),
+  mockRenameSync: vi.fn(),
+  mockPkc: { getCommunity: vi.fn(), createComment: vi.fn(), getComment: vi.fn() },
 }));
 
 vi.mock('../src/index.js', () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-  pkc: {},
+  pkc: mockPkc,
 }));
 
 vi.mock('@pkcprotocol/pkc-js', () => ({
@@ -20,9 +22,21 @@ vi.mock('node-fetch', () => ({ default: mockFetch }));
 vi.mock('node:fs', () => ({
   readFileSync: (...args: any[]) => mockReadFileSync(...args),
   writeFileSync: (...args: any[]) => mockWriteFileSync(...args),
+  renameSync: (...args: any[]) => mockRenameSync(...args),
 }));
 
-import { fetchCommunities, getChatIds, sendMediaToChat, loadOldPosts, savePosts, startFeedBot, _getProcessedCids, _resetState } from '../src/feed-bot.js';
+import {
+  fetchCommunities,
+  getChatIds,
+  sendMediaToChat,
+  loadOldPosts,
+  savePosts,
+  startFeedBot,
+  setShuttingDown,
+  waitForPendingSends,
+  _getProcessedCids,
+  _resetState,
+} from '../src/feed-bot.js';
 import type { BotConfig, CommunityInfo } from '../src/types.js';
 
 function makeMockBot() {
@@ -140,7 +154,8 @@ describe('savePosts', () => {
 
     savePosts();
 
-    expect(mockWriteFileSync).toHaveBeenCalledWith('history.json', expect.any(String), 'utf8');
+    expect(mockWriteFileSync).toHaveBeenCalledWith('history.json.tmp', expect.any(String), 'utf8');
+    expect(mockRenameSync).toHaveBeenCalledWith('history.json.tmp', 'history.json');
 
     const writtenData = JSON.parse(mockWriteFileSync.mock.calls[0][1]);
     expect(writtenData.Cids).toEqual(expect.arrayContaining(['a', 'b']));
@@ -153,6 +168,19 @@ describe('savePosts', () => {
     });
 
     expect(() => savePosts()).not.toThrow();
+  });
+
+  test('a failed write never truncates history.json', () => {
+    mockWriteFileSync.mockReset().mockImplementation(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+    mockRenameSync.mockReset();
+
+    savePosts();
+
+    // writeFileSync opens its target with 'w' (truncate first), so it must never target history.json itself.
+    expect(mockWriteFileSync.mock.calls.map((call) => call[0])).not.toContain('history.json');
+    expect(mockRenameSync).not.toHaveBeenCalled();
   });
 });
 
@@ -390,5 +418,237 @@ describe('_resetState', () => {
 
     _resetState();
     expect(_getProcessedCids().size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// startFeedBot cycle loop
+// ---------------------------------------------------------------------------
+describe('startFeedBot cycles', () => {
+  const CHAT = '-100111';
+  const GROUP = '-100222';
+  const community: CommunityInfo = { address: 'board.eth' };
+
+  function makePost(cid: string, overrides: Record<string, any> = {}) {
+    return { cid, title: `Title ${cid}`, content: 'Body', timestamp: Math.floor(Date.now() / 1000), author: { address: '12D3KooWAuthor' }, ...overrides };
+  }
+
+  function makeComment(overrides: Record<string, any> = {}) {
+    return {
+      updatedAt: Math.floor(Date.now() / 1000),
+      removed: false,
+      update: vi.fn(async () => {}),
+      // Delivers the CommentUpdate as soon as the bot listens, so the 10s wait resolves immediately.
+      on: vi.fn((event: string, listener: () => void) => {
+        if (event === 'update') listener();
+      }),
+      removeListener: vi.fn(),
+      stop: vi.fn(async () => {}),
+      ...overrides,
+    };
+  }
+
+  function serveCommunity(posts: any[]) {
+    mockPkc.getCommunity.mockResolvedValue({ address: community.address, posts: { pages: { hot: { comments: posts } } } });
+  }
+
+  // Lets startFeedBot run `cycles` full cycles; the next cycle sees the shutdown flag right after fetching the list.
+  function serveCycles(cycles: number) {
+    let fetches = 0;
+    mockFetch.mockImplementation(async () => {
+      fetches += 1;
+      if (fetches > cycles) setShuttingDown(true);
+      return { ok: true, json: async () => ({ communities: [community] }) };
+    });
+  }
+
+  async function runCycles(bot: any, cycles: number) {
+    serveCycles(cycles);
+    const run = startFeedBot(bot, makeMockConfig());
+    await vi.advanceTimersByTimeAsync(cycles * 40_000);
+    await run;
+  }
+
+  function sendsTo(bot: any, chatId: string) {
+    return bot.telegram.sendMessage.mock.calls.filter((call: any[]) => call[0] === chatId).length;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    process.env.BOT_TOKEN = 'test-token';
+    process.env.FEED_BOT_CHAT = CHAT;
+    mockReadFileSync.mockReset().mockImplementation(() => {
+      throw new Error('ENOENT: no such file or directory');
+    });
+    mockWriteFileSync.mockReset();
+    mockRenameSync.mockReset();
+    mockPkc.getCommunity.mockReset();
+    mockPkc.createComment.mockReset().mockImplementation(async () => makeComment());
+    mockPkc.getComment.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('does not resend a post when saving history.json fails', async () => {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ Cids: [] }));
+    mockWriteFileSync.mockImplementation(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+    serveCommunity([makePost('QmPost1')]);
+    const bot = makeMockBot();
+
+    await runCycles(bot, 3);
+
+    expect(sendsTo(bot, CHAT)).toBe(1);
+  });
+
+  test('skips posts older than 2 days and deleted posts without subscribing to comment updates', async () => {
+    const threeDaysAgo = Math.floor(Date.now() / 1000) - 3 * 24 * 60 * 60;
+    serveCommunity([makePost('QmOld', { timestamp: threeDaysAgo }), makePost('QmDeleted', { deleted: true })]);
+    const bot = makeMockBot();
+
+    await runCycles(bot, 2);
+
+    expect(mockPkc.createComment).not.toHaveBeenCalled();
+    expect(bot.telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  // Every send to the group fails during the first cycle only (e.g. a 429 burst).
+  async function groupDownInFirstCycle(chatId: string) {
+    if (chatId === GROUP && mockFetch.mock.calls.length === 1) throw new Error('429: Too Many Requests');
+    return {};
+  }
+
+  test('retries a text post in the chat whose send failed, without resending to the chat that got it', async () => {
+    process.env.FEED_BOT_GROUP = GROUP;
+    serveCommunity([makePost('QmPost1')]);
+    const bot = makeMockBot();
+    bot.telegram.sendMessage.mockImplementation(groupDownInFirstCycle);
+
+    await runCycles(bot, 2);
+
+    expect(sendsTo(bot, CHAT)).toBe(1);
+    expect(sendsTo(bot, GROUP)).toBe(2);
+    const lastHistory = JSON.parse(mockWriteFileSync.mock.calls.at(-1)![1]);
+    expect(lastHistory.Cids).toEqual(['QmPost1']);
+  });
+
+  test('retries a media post in the chat whose send failed, without resending to the chat that got it', async () => {
+    process.env.FEED_BOT_GROUP = GROUP;
+    serveCommunity([makePost('QmPost1', { link: 'https://img.com/pic.jpg' })]);
+    const bot = makeMockBot();
+    // Both the photo and sendMediaToChat's plain-message fallback fail for the group.
+    bot.telegram.sendPhoto.mockImplementation(groupDownInFirstCycle);
+    bot.telegram.sendMessage.mockImplementation(groupDownInFirstCycle);
+
+    await runCycles(bot, 2);
+
+    const photosTo = (chatId: string) => bot.telegram.sendPhoto.mock.calls.filter((call: any[]) => call[0] === chatId).length;
+    expect(photosTo(CHAT)).toBe(1);
+    expect(photosTo(GROUP)).toBe(2);
+  });
+
+  test('treats a bare CID from history.json as delivered to every chat', async () => {
+    process.env.FEED_BOT_GROUP = GROUP;
+    mockReadFileSync.mockReturnValue(JSON.stringify({ Cids: ['QmPost1'] }));
+    serveCommunity([makePost('QmPost1')]);
+    const bot = makeMockBot();
+
+    await runCycles(bot, 1);
+
+    expect(bot.telegram.sendMessage).not.toHaveBeenCalled();
+    expect(mockPkc.createComment).not.toHaveBeenCalled();
+  });
+
+  test('a crawl abandoned by the 6-minute timeout does not resend a post that a later crawl already sent', async () => {
+    serveCommunity([makePost('QmPost1')]);
+    // Crawl A's comment.update() stalls until released; later crawls get a responsive comment.
+    let releaseStalledUpdate!: () => void;
+    const stalledComment = makeComment({ update: vi.fn(() => new Promise<void>((resolve) => (releaseStalledUpdate = resolve))) });
+    mockPkc.createComment.mockResolvedValueOnce(stalledComment);
+    const bot = makeMockBot();
+    serveCycles(3);
+    const run = startFeedBot(bot, makeMockConfig());
+
+    // Cycle 1 gives up on crawl A after 6 minutes (A keeps running); cycle 2's crawl B sends the post.
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 35_000);
+    expect(sendsTo(bot, CHAT)).toBe(1);
+
+    // Crawl A resumes past its earlier history check.
+    releaseStalledUpdate();
+    await vi.advanceTimersByTimeAsync(80_000);
+    await run;
+
+    expect(sendsTo(bot, CHAT)).toBe(1);
+  });
+
+  test('a later crawl that queued the same post while the abandoned crawl was still sending it does not send it again', async () => {
+    serveCommunity([makePost('QmPost1')]);
+    const bot = makeMockBot();
+    // Crawl A's send is slow enough to outlast the 6-minute crawl timeout.
+    let releaseSlowSend!: () => void;
+    bot.telegram.sendMessage.mockImplementationOnce(() => new Promise((resolve) => (releaseSlowSend = () => resolve({}))));
+    serveCycles(2);
+    const run = startFeedBot(bot, makeMockConfig());
+
+    // Cycle 2's crawl B verifies the post and queues it behind crawl A's in-flight send.
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 35_000);
+    expect(sendsTo(bot, CHAT)).toBe(1);
+
+    releaseSlowSend();
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 80_000);
+    await run;
+
+    expect(sendsTo(bot, CHAT)).toBe(1);
+  });
+
+  // Two communities in one batch: QmPost1's send is held in flight and QmPost2's send waits behind it in the queue.
+  function holdFirstSendWithAnotherQueued(bot: any) {
+    const other: CommunityInfo = { address: 'other.eth' };
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ communities: [community, other] }) });
+    mockPkc.getCommunity.mockImplementation(async ({ address }: { address: string }) => ({
+      address,
+      posts: { pages: { hot: { comments: [makePost(address === community.address ? 'QmPost1' : 'QmPost2')] } } },
+    }));
+    let releaseFirstSend!: () => void;
+    bot.telegram.sendMessage.mockImplementationOnce(() => new Promise((resolve) => (releaseFirstSend = () => resolve({}))));
+    return () => releaseFirstSend();
+  }
+
+  test('queued sends do not start once shutdown has begun', async () => {
+    const bot = makeMockBot();
+    const releaseFirstSend = holdFirstSendWithAnotherQueued(bot);
+    const run = startFeedBot(bot, makeMockConfig());
+    await vi.advanceTimersByTimeAsync(100);
+    expect(bot.telegram.sendMessage).toHaveBeenCalledTimes(1);
+
+    setShuttingDown(true);
+    releaseFirstSend();
+    await vi.advanceTimersByTimeAsync(100);
+    await run;
+
+    expect(bot.telegram.sendMessage).toHaveBeenCalledTimes(1);
+    expect(_getProcessedCids().has('QmPost1')).toBe(true);
+  });
+
+  test('waitForPendingSends resolves once the in-flight send is recorded', async () => {
+    const bot = makeMockBot();
+    const releaseFirstSend = holdFirstSendWithAnotherQueued(bot);
+    const run = startFeedBot(bot, makeMockConfig());
+    await vi.advanceTimersByTimeAsync(100);
+
+    setShuttingDown(true);
+    let drained = false;
+    void waitForPendingSends(5_000).then(() => (drained = true));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(drained).toBe(false);
+
+    releaseFirstSend();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(drained).toBe(true);
+    expect(_getProcessedCids().has('QmPost1')).toBe(true);
+    await run;
   });
 });
