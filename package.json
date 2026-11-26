@@ -15,7 +15,7 @@
         "prettier": "prettier src/**/*.{js,ts} --write"
     },
     "dependencies": {
-        "@pkcprotocol/pkc-js": "0.0.65",
+        "@pkcprotocol/pkc-js": "0.0.163",
         "dotenv": "17.4.2",
         "node-fetch": "3.3.2",
         "p-queue": "9.3.1",
